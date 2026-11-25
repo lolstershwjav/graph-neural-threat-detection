@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Flow Graph Explorer</title>
+<style>
+:root{color-scheme:dark;background:#0d1620;color:#eaf1f8;font:16px system-ui,sans-serif}
+*{box-sizing:border-box}main{max-width:1200px;margin:auto;padding:40px 23px}
+h1{font-size:clamp(2.3rem,6vw,4.5rem);margin:0;letter-spacing:-.05em}
+p{color:#a9b9ca}header p{margin:4px 0 23px}
+.controls, article{background:#152432;border:1px solid #30485b;border-radius:12px;padding:16px}
+.controls{display:flex;flex-wrap:wrap;gap:16px;align-items:end}
+label{font-size:.9rem;color:#b7c6d4}select{display:block;font:inherit;color:inherit;background:#0b1722;
+  border:1px solid #49647c;border-radius:5px;padding:.55rem;min-width:12rem;margin-top:6px}
+input{vertical-align:middle}.split{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(260px,1fr);gap:14px;margin-top:14px}
+h2{font-size:1.1rem;margin-top:0}canvas{display:block;width:100%;height:550px;background:#101c29;border-radius:6px}
+.legend{font-size:.82rem}.legend span{padding-right:.75rem}table{border-collapse:collapse;width:100%;text-align:right;font-size:.86rem}
+th,td{border-bottom:1px solid #30485b;padding:8px 2px}th:first-child,td:first-child{text-align:left}
+tbody tr:hover{background:#20364a}button{color:inherit;background:transparent;border:0;padding:2px;font:inherit;cursor:pointer}
+.status{font-size:.9rem;line-height:1.5;min-height:55px}.note{font-size:.88rem;line-height:1.5}
+@media(max-width:760px){.split{grid-template-columns:1fr}canvas{height:435px}}
+</style>
+</head>
+<body><main><header><h1>Flow Graph Explorer</h1><p>Temporal GraphSAGE on held-out CTU-13 captures</p></header>
+<div class="controls">
+<label>Flow window<select id="window"></select></label>
+<label>Display<select id="view"><option value="rank">Highest-scoring flows</option><option value="context">Time-ordered sample</option></select></label>
+<label><input type="checkbox" id="confirmed"> Confirmed labels only</label>
+</div>
+<div class="split">
+<article><h2>Host relationships</h2>
+<p class="legend"><span style="color:#f8a1a0">● Botnet-labeled</span><span style="color:#62e1bd">● Confirmed normal</span><span style="color:#8eadd4">● Background</span></p>
+<canvas id="graph" role="img" aria-label="Anonymized host communication graph"></canvas>
+<p class="note" id="selection">Select a host to inspect its connected flows.</p></article>
+<article><h2>Flow evidence</h2>
+<p class="status" id="details" aria-live="polite"></p>
+<table><thead><tr><th>Flow</th><th>Score</th><th>Graph Δ</th></tr></thead><tbody id="edges"></tbody></table>
+<p class="note">Graph Δ is the score change relative to the same model with only self messages. It describes model sensitivity to graph context.</p>
+</article></div></main>
+<script type="application/json" id="data">__GRAPH_DATA__</script>
+<script>
+const datasets = JSON.parse(document.querySelector('#data').textContent)
+const element = name => document.getElementById(name)
+const canvas = element('graph'), chooser = element('window')
+const className = { '-1':'Background','0':'Confirmed normal','1':'Botnet-labeled' }
+const color = { '-1':'#8eadd4','0':'#62e1bd','1':'#f8a1a0' }
+let selectedNode = null, hoveredEdge = null, shown = [], positions = new Map()
+datasets.forEach((window,i) => chooser.add(new Option(`Capture ${window.capture} · Window ${i+1}`,i)))
+function layout(graph) {
+  const weight = new Map()
+  graph.forEach(e => {for(const id of [e.source,e.dest]) weight.set(id,(weight.get(id)||0)+1)})
+  const ids = [...weight.keys()].sort((a,b)=>(weight.get(b)-weight.get(a)) || (a-b))
+  const width=canvas.clientWidth, height=canvas.clientHeight, circle=Math.min(width,height)*.41
+  const map = new Map()
+  ids.forEach((id,i)=>{
+    const scale=i===0?0:i<8?.48:1, phase=i<8?i/7:(i-8)/Math.max(1,ids.length-8)
+    map.set(id,[width/2+circle*scale*Math.cos(phase*2*Math.PI),
+                height/2+circle*scale*Math.sin(phase*2*Math.PI),
+                Math.min(10,3+Math.sqrt(weight.get(id)))])
+  })
+  return map
+}
+function draw() {
+  const ctx=canvas.getContext('2d'), ratio=window.devicePixelRatio||1
+  canvas.width=canvas.clientWidth*ratio;canvas.height=canvas.clientHeight*ratio
+  ctx.scale(ratio,ratio)
+  positions = layout(shown)
+  for(const edge of shown) {
+    const [x,y]=positions.get(edge.source), [u,v]=positions.get(edge.dest)
+    const highlight=hoveredEdge===edge
+    ctx.strokeStyle=color[edge.label]
+    ctx.globalAlpha=highlight?1:selectedNode!==null&&![edge.source,edge.dest].includes(selectedNode)?.13:.38+.4*edge.score
+    ctx.lineWidth=highlight?3:1+1.5*edge.score
+    ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(u,v);ctx.stroke()
+  }
+  ctx.globalAlpha=1
+  for(const [id,[x,y,r]] of positions) {
+    ctx.beginPath();ctx.arc(x,y,r,0,2*Math.PI)
+    ctx.fillStyle=selectedNode===id?'#fff3bf':'#c9ddf0';ctx.fill()
+    if(selectedNode===id){
+      ctx.fillStyle='#eaf1f8';ctx.font='12px system-ui';ctx.fillText('Host '+(id+1),x+12,y+3)
+    }
+  }
+}
+function details(e) {
+  const from='H'+(e.source+1), to='H'+(e.dest+1)
+  return `${from} → ${to} · ${className[e.label]} · Score ${e.score.toFixed(3)} · Graph Δ ${e.topology_delta.toFixed(3)}`
+}
+function table() {
+  const windowData=datasets[Number(chooser.value)]
+  const related=selectedNode===null?shown:shown.filter(e=>[e.source,e.dest].includes(selectedNode))
+  element('details').textContent=`${windowData.n_full_nodes} hosts and ${windowData.n_full_flows} flows in the full window. Showing ${shown.length} anonymized flows.`
+  element('selection').textContent=selectedNode===null?'Select a host to inspect its connected flows.':
+    `Host ${selectedNode+1} has ${related.length} visible flows. Select the graph background to clear.`
+  element('edges').replaceChildren(...related.slice(0,12).map(e=>{
+    const tr=document.createElement('tr'), btn=document.createElement('button')
+    btn.textContent=`H${e.source+1} → H${e.dest+1}`
+    btn.addEventListener('click',()=>{hoveredEdge=e;element('details').textContent=details(e);draw()})
+    tr.insertCell().append(btn)
+    tr.insertCell().textContent=e.score.toFixed(3)
+    tr.insertCell().textContent=e.topology_delta.toFixed(3)
+    return tr
+  }))
+}
+function redraw() {
+  selectedNode=null;hoveredEdge=null
+  const windowData=datasets[Number(chooser.value)]
+  shown=windowData.edges.filter(e=>!element('confirmed').checked||e.label>=0)
+  if(element('view').value==='rank')shown.sort((a,b)=>b.score-a.score)
+  shown=shown.slice(0,48)
+  draw();table()
+}
+canvas.addEventListener('click',event=>{
+  selectedNode=null;hoveredEdge=null
+  for(const [id,[x,y,r]] of positions){
+    if(Math.hypot(event.offsetX-x,event.offsetY-y)<r+7){selectedNode=id;break}
+  }
+  draw();table()
+})
+for(const id of ['window','view','confirmed'])element(id).addEventListener('change',redraw)
+window.addEventListener('resize',draw)
+redraw()
+</script>
+</body></html>

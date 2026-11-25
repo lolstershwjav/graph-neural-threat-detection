@@ -1,0 +1,11 @@
+{
+  "seeds": [4, 18, 32],
+  "train": [42, 44, 46, 48, 50, 52, 54],
+  "validation": [45, 47, 51],
+  "test": [43, 49, 53],
+  "window_seconds": 90,
+  "edges_per_window": 2600,
+  "epochs": 9,
+  "history_windows": 3,
+  "threshold_fpr": 0.05
+}

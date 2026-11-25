@@ -1,0 +1,7 @@
+data/
+.venv/
+__pycache__/
+*.egg-info/
+*.tmp
+results/study.json
+results/flow-graph.html
